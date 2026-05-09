@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Conda
+.conda/
+
+# Editor
+.idea/
+*.swp
+.DS_Store
+
+# Datasets (sono grossi, non vanno su git)
+data/CIFAR10/
+data/cifar-10-batches-py/
+data/cifar-10-python.tar.gz
+
+# Output di esperimenti
+experiments/results/
+experiments/logs/
+checkpoints/
+*.pth
+*.pt
+
+# Wandb
+wandb/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Plot generati
+plots/*.png
+plots/*.pdf
