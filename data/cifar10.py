@@ -14,15 +14,18 @@ import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader, Dataset
 from typing import Tuple
+from pathlib import Path
 
 
 # CIFAR-10 statistics computed on the training set (standard values from literature)
 CIFAR10_MEAN = (0.4914, 0.4822, 0.4465)
 CIFAR10_STD = (0.2470, 0.2435, 0.2616)
 
+CURRENT_DIR = Path(__file__).resolve().parent
+DEFAULT_DATA_ROOT = str(CURRENT_DIR / "CIFAR10")
 
 def get_cifar10_datasets(
-        data_root: str = "./data/CIFAR10",
+        data_root: str = DEFAULT_DATA_ROOT,
         augment_train: bool = True,
 ) -> Tuple[Dataset, Dataset]:
     """
@@ -53,17 +56,26 @@ def get_cifar10_datasets(
     else:
         train_transform = test_transform
 
+    # Check if dataset is already downloaded.
+    # CIFAR-10 unpacks into a "cifar-10-batches-py" subdirectory inside data_root.
+    cifar_dir = Path(data_root) / "cifar-10-batches-py"
+    already_downloaded = cifar_dir.exists() and (cifar_dir / "test_batch").exists()
+
+    # download=True does an MD5 check that is slow (~5 min on a regular HDD).
+    # We only enable it on first run.
+    download = not already_downloaded
+
     trainset = torchvision.datasets.CIFAR10(
         root=data_root,
         train=True,           # ← TRAIN set, fix del bug del repo originale
-        download=True,
+        download=download,
         transform=train_transform,
     )
 
     testset = torchvision.datasets.CIFAR10(
         root=data_root,
         train=False,
-        download=True,
+        download=download,
         transform=test_transform,
     )
 
