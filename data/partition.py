@@ -207,6 +207,16 @@ if __name__ == "__main__":
 
     print()
     print("=" * 60)
+    print("Dirichlet partition (alpha=1.0, intermediate)")
+    print("=" * 60)
+    dir_idx_1 = dirichlet_partition(trainset, num_clients=10, alpha=1.0, seed=42)
+    stats = get_partition_stats(dir_idx_1, targets, num_classes=10)
+    for k in range(10):
+        print(f"  Client {k}: {len(dir_idx_1[k])} samples, "
+              f"class counts: {stats[k].tolist()}")
+
+    print()
+    print("=" * 60)
     print("Dirichlet partition (alpha=100, almost IID)")
     print("=" * 60)
     dir_idx_100 = dirichlet_partition(trainset, num_clients=10, alpha=100.0, seed=42)
@@ -222,5 +232,7 @@ if __name__ == "__main__":
                         save_path="../plots/partition_iid.png")
     visualize_partition(dir_idx_01, trainset, title="Dirichlet partition (alpha=0.1)",
                         save_path="../plots/partition_dirichlet_alpha0.1.png")
+    visualize_partition(dir_idx_1, trainset, title="Dirichlet partition (alpha=1.0)",
+                        save_path="../plots/partition_dirichlet_alpha1.0.png")
     visualize_partition(dir_idx_100, trainset, title="Dirichlet partition (alpha=100)",
                         save_path="../plots/partition_dirichlet_alpha100.png")

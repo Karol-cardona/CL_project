@@ -110,19 +110,23 @@ class ExperimentLogger:
             self.csv_writer = csv.DictWriter(self.csv_file, fieldnames=self._csv_columns)
             self.csv_writer.writeheader()
 
-        # Sanity check: same keys as first call
-        if set(metrics.keys()) != set(self._csv_columns):
-            missing = set(self._csv_columns) - set(metrics.keys())
-            extra = set(metrics.keys()) - set(self._csv_columns)
-            raise ValueError(
-                f"Inconsistent log keys. Missing: {missing}. Extra: {extra}"
-            )
+        # Permissive logging: missing keys → NaN, extra keys → ignored with warning.
+        # This lets us log fairness metrics (macro_f1, std_acc, fairness_gap) only
+        # every K rounds without having to pad every other row with placeholder values.
+        missing = set(self._csv_columns) - set(metrics.keys())
+        extra = set(metrics.keys()) - set(self._csv_columns)
+
+        if extra:
+            print(f"[Logger] WARNING: ignoring unknown keys at first log: {extra}")
+
+        # Build a row with NaN for missing columns
+        row = {col: metrics.get(col, float("nan")) for col in self._csv_columns}
 
         # Write to CSV (and flush so we don't lose data if the process crashes)
-        self.csv_writer.writerow(metrics)
+        self.csv_writer.writerow(row)
         self.csv_file.flush()
 
-        # Mirror to wandb
+        # Mirror to wandb (only the keys actually present — wandb handles sparse logging natively)
         if self.use_wandb and self.wandb is not None:
             self.wandb.log(metrics)
 

@@ -25,6 +25,33 @@ import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, Subset
 
+import math
+
+
+def cosine_lr(round_idx: int, total_rounds: int, lr_max: float, lr_min: float = 0.0) -> float:
+    """
+    Cosine-annealed learning rate.
+
+    Args:
+        round_idx: current global round, 1-indexed (i.e. first round is 1, not 0).
+        total_rounds: total number of global rounds R.
+        lr_max: initial learning rate (used at round 1).
+        lr_min: final learning rate (approached at round R).
+
+    Returns:
+        lr_r ∈ [lr_min, lr_max], decreasing along a cosine curve.
+
+    Notes:
+        - At round_idx=1, returns lr_max.
+        - At round_idx=total_rounds, returns lr_min.
+        - In between, follows lr_min + 0.5*(lr_max-lr_min)*(1+cos(pi*(r-1)/(R-1))).
+    """
+    if total_rounds <= 1:
+        return lr_max
+    progress = (round_idx - 1) / (total_rounds - 1)
+    progress = max(0.0, min(1.0, progress))  # clamp
+    return lr_min + 0.5 * (lr_max - lr_min) * (1.0 + math.cos(math.pi * progress))
+
 
 class Client:
     """
@@ -68,7 +95,7 @@ class Client:
             batch_size=batch_size,
             shuffle=True,
             num_workers=0,
-            pin_memory=True,
+            pin_memory=False,
             drop_last=False,
         )
 
@@ -82,6 +109,7 @@ class Client:
             global_state_dict: Dict[str, torch.Tensor],
             model_factory,
             local_epochs: int = 2,
+            lr_override: Optional[float] = None,
     ) -> Tuple[Dict[str, torch.Tensor], int, float]:
         """
         Run local SGD training for `local_epochs` epochs starting from the
@@ -102,9 +130,12 @@ class Client:
         model.train()
 
         # 2. Set up local optimizer (SGD with momentum + weight decay)
+        # Use the server-provided LR if available (cosine schedule across rounds),
+        # otherwise fall back to the client's default LR (constant schedule).
+        effective_lr = lr_override if lr_override is not None else self.lr
         optimizer = optim.SGD(
             model.parameters(),
-            lr=self.lr,
+            lr=effective_lr,
             momentum=self.momentum,
             weight_decay=self.weight_decay,
         )
@@ -121,6 +152,8 @@ class Client:
                 logits = model(inputs)
                 loss = F.cross_entropy(logits, targets)
                 loss.backward()
+                # Gradient clipping
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
                 optimizer.step()
 
                 running_loss += loss.item() * inputs.size(0)
@@ -195,6 +228,7 @@ class FedAvgServer:
             model_factory,
             local_epochs: int = 2,
             verbose: bool = True,
+            lr_override: Optional[float] = None,
     ) -> Dict[str, float]:
         """
         Run one full FedAvg round:
@@ -215,6 +249,7 @@ class FedAvgServer:
                 global_state_dict=global_state,
                 model_factory=model_factory,
                 local_epochs=local_epochs,
+                lr_override=lr_override,
             )
             client_updates.append((local_state, n_samples))
             client_losses.append(avg_loss)
@@ -233,6 +268,7 @@ class FedAvgServer:
             "round": round_idx,
             "avg_client_loss": float(sum(client_losses) / len(client_losses)),
             "weighted_client_loss": float(weighted_loss),
+            "lr": float(lr_override) if lr_override is not None else float("nan"),
         }
 
 

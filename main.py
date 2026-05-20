@@ -29,10 +29,17 @@ import torch
 from data.cifar10 import get_cifar10_datasets, get_test_loader
 from data.partition import iid_partition, dirichlet_partition
 from models.resnet import build_resnet
-from algorithms.fedavg import Client, FedAvgServer
+from algorithms.fedavg import Client, FedAvgServer, cosine_lr
+from algorithms.fedcurv import FedCurvClient, FedCurvServer
 from utils.seed import set_seed
 from utils.eval import evaluate, evaluate_extended
 from utils.logger import ExperimentLogger, make_run_name
+
+# Force UTF-8 stdout on Windows to handle Unicode characters in print statements
+# (cmd.exe defaults to cp1252 which crashes on '→', '↳', etc.)
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
 
 
 def parse_args():
@@ -40,7 +47,7 @@ def parse_args():
 
     # Algorithm
     parser.add_argument("--algorithm", type=str, default="fedavg",
-                        choices=["fedavg"],  # fedcurv will be added later
+                        choices=["fedavg", "fedcurv"],
                         help="Federated algorithm to use")
 
     # Dataset / partitioning
@@ -82,6 +89,9 @@ def parse_args():
                         help="Evaluate global model every N rounds (1 = every round)")
     parser.add_argument("--eval-per-class", action="store_true",
                         help="Also compute per-class accuracy at the end")
+    parser.add_argument("--eval-extended-every", type=int, default=10,
+                        help="Compute extended metrics (macro F1, fairness) every N rounds. "
+                             "Set to 0 to disable. NOTE: must be a multiple of --eval-every.")
 
     # Logging
     parser.add_argument("--run-name", type=str, default=None,
@@ -92,6 +102,21 @@ def parse_args():
                         help="Mirror logs to Weights & Biases")
     parser.add_argument("--verbose", action="store_true",
                         help="Print per-client stats each round")
+
+    # LR schedule
+    parser.add_argument("--lr-schedule", type=str, default="cosine",
+                        choices=["constant", "cosine"],
+                        help="Learning rate schedule across global rounds. "
+                             "'constant' keeps lr fixed (McMahan-style); "
+                             "'cosine' decays lr from --lr to --lr-min over all rounds.")
+    parser.add_argument("--lr-min", type=float, default=1e-4,
+                        help="Minimum LR for cosine schedule (final round value)")
+
+    # FedCurv-specific
+    parser.add_argument("--fed-lambda", type=float, default=1000.0,
+                        help="FedCurv regularization coefficient (ignored if algorithm != fedcurv)")
+    parser.add_argument("--fisher-samples", type=int, default=200,
+                        help="Number of samples used to estimate Fisher per client (FedCurv)")
 
     return parser.parse_args()
 
@@ -108,14 +133,20 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # Build run name and logger
+    # Include lambda in suffix for FedCurv runs
+    suffix = args.suffix
+    if args.algorithm == "fedcurv":
+        lambda_str = f"lambda{args.fed_lambda}".replace(".", "_")
+        suffix = lambda_str if not suffix else f"{lambda_str}_{suffix}"
+
     run_name = args.run_name or make_run_name(
         algorithm=args.algorithm,
         alpha=args.alpha,
         local_epochs=args.local_epochs,
         seed=args.seed,
-        suffix=args.suffix,
+        suffix=suffix,
     )
+
     config = vars(args)
     config["device"] = str(device)
     logger = ExperimentLogger(
@@ -143,9 +174,10 @@ def main():
     print(f"  Client sizes: min={min(sizes)}, max={max(sizes)}, "
           f"mean={sum(sizes)/len(sizes):.0f}")
 
-    # Build clients
+    # Build clients (algorithm-specific)
+    ClientClass = FedCurvClient if args.algorithm == "fedcurv" else Client
     clients = [
-        Client(
+        ClientClass(
             client_id=k,
             dataset=trainset,
             indices=idx,
@@ -167,6 +199,13 @@ def main():
 
     if args.algorithm == "fedavg":
         server = FedAvgServer(global_model=global_model, clients=clients, device=device)
+    elif args.algorithm == "fedcurv":
+        server = FedCurvServer(
+            global_model=global_model, clients=clients, device=device,
+            fed_lambda=args.fed_lambda,
+            fisher_samples=args.fisher_samples,
+        )
+        print(f"  FedCurv: lambda={args.fed_lambda}, fisher_samples={args.fisher_samples}")
     else:
         raise NotImplementedError(f"Algorithm {args.algorithm} not implemented yet")
 
@@ -178,26 +217,56 @@ def main():
     print("\n" + "=" * 60)
     print("Starting federated training")
     print("=" * 60)
+
+    if args.lr_schedule == "cosine":
+        print(f"LR schedule: cosine from {args.lr} → {args.lr_min} over {args.rounds} rounds")
+        print(f"  Sample: round 1 → lr={cosine_lr(1, args.rounds, args.lr, args.lr_min):.5f}")
+        print(f"  Sample: round {args.rounds//2} → lr={cosine_lr(args.rounds//2, args.rounds, args.lr, args.lr_min):.5f}")
+        print(f"  Sample: round {args.rounds} → lr={cosine_lr(args.rounds, args.rounds, args.lr, args.lr_min):.5f}")
+    else:
+        print(f"LR schedule: constant at {args.lr}")
+
     init_loss, init_acc = evaluate(global_model, test_loader, device)
     print(f"[Round 0] Initial: loss={init_loss:.4f}, acc={init_acc*100:.2f}%")
-    logger.log({
+
+    # Build the initial log entry. For FedCurv runs, include penalty_norm=0 from round 0
+    # so the logger's column schema is consistent across all rounds.
+    init_log = {
         "round": 0,
         "train_loss": float("nan"),
         "test_loss": init_loss,
         "test_acc": init_acc,
         "elapsed_sec": 0.0,
-    })
+        "lr": float("nan"),
+
+        # Extended metrics (populated every --eval-extended-every rounds)
+        "macro_f1": float("nan"),
+        "std_acc": float("nan"),
+        "fairness_gap": float("nan"),
+        "min_acc": float("nan"),
+    }
+    if args.algorithm == "fedcurv":
+        init_log["penalty_norm"] = 0.0
+    logger.log(init_log)
 
     # Training loop
     best_acc = init_acc
     start_time = time.time()
     for r in range(1, args.rounds + 1):
         round_start = time.time()
+
+        # Compute LR for this round according to the schedule
+        if args.lr_schedule == "cosine":
+            current_lr = cosine_lr(r, args.rounds, lr_max=args.lr, lr_min=args.lr_min)
+        else:  # constant
+            current_lr = args.lr
+
         stats = server.run_round(
             round_idx=r,
             model_factory=model_factory,
             local_epochs=args.local_epochs,
             verbose=args.verbose,
+            lr_override=current_lr,
         )
         round_time = time.time() - round_start
 
@@ -206,19 +275,46 @@ def main():
             test_loss, test_acc = evaluate(global_model, test_loader, device)
             elapsed = time.time() - start_time
             best_acc = max(best_acc, test_acc)
-            print(f"[Round {r:3d}/{args.rounds}] "
-                  f"train_loss={stats['weighted_client_loss']:.4f} "
-                  f"test_loss={test_loss:.4f} "
-                  f"test_acc={test_acc*100:5.2f}% "
-                  f"(best={best_acc*100:5.2f}%) "
-                  f"[{round_time:.1f}s/round, total {elapsed/60:.1f}min]")
-            logger.log({
+            base_msg = (f"[Round {r:3d}/{args.rounds}] "
+                        f"train_loss={stats['weighted_client_loss']:.4f} "
+                        f"test_loss={test_loss:.4f} "
+                        f"test_acc={test_acc*100:5.2f}% "
+                        f"(best={best_acc*100:5.2f}%) "
+                        f"[{round_time:.1f}s/round, total {elapsed/60:.1f}min]")
+            if "penalty_norm" in stats and stats["penalty_norm"] > 0:
+                base_msg += f" | penalty={stats['penalty_norm']:.4f}"
+            print(base_msg)
+            log_entry = {
                 "round": r,
                 "train_loss": stats["weighted_client_loss"],
                 "test_loss": test_loss,
                 "test_acc": test_acc,
                 "elapsed_sec": round(elapsed, 1),
-            })
+                "lr": stats.get("lr", float("nan")),
+            }
+
+            # Extended evaluation: macro F1 + fairness, only every K rounds (expensive: full pass on test set + sklearn)
+            do_extended = (
+                    args.eval_extended_every > 0
+                    and (r % args.eval_extended_every == 0 or r == args.rounds)
+            )
+            if do_extended:
+                ext = evaluate_extended(global_model, test_loader, device, num_classes=10)
+                log_entry["macro_f1"]     = ext["macro_f1"]
+                log_entry["std_acc"]      = ext["std_acc"]
+                log_entry["fairness_gap"] = ext["fairness_gap"]
+                log_entry["min_acc"]      = ext["min_acc"]
+                # Pretty print for the console too
+                print(f"           ↳ macro_f1={ext['macro_f1']*100:5.2f}% "
+                      f"std={ext['std_acc']*100:4.2f}% "
+                      f"gap={ext['fairness_gap']*100:5.2f}pp "
+                      f"worst_class={ext['min_acc']*100:5.2f}%")
+
+            # FedCurv-specific: log the penalty term magnitude
+            if "penalty_norm" in stats:
+                log_entry["penalty_norm"] = stats["penalty_norm"]
+
+            logger.log(log_entry)
 
     total_time = time.time() - start_time
     print(f"\nTraining finished in {total_time/60:.1f} min")
