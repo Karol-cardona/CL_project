@@ -124,12 +124,12 @@ class Client:
         Returns:
             (local_state_dict, num_samples, avg_train_loss)
         """
-        # 1. Build a local copy of the model and load global weights
+        # Build a local copy of the model and load global weights
         model = model_factory()
         model.load_state_dict(global_state_dict)
         model.train()
 
-        # 2. Set up local optimizer (SGD with momentum + weight decay)
+        # Set up local optimizer (SGD with momentum + weight decay)
         # Use the server-provided LR if available (cosine schedule across rounds),
         # otherwise fall back to the client's default LR (constant schedule).
         effective_lr = lr_override if lr_override is not None else self.lr
@@ -140,7 +140,7 @@ class Client:
             weight_decay=self.weight_decay,
         )
 
-        # 3. Train for `local_epochs` epochs
+        # Train for `local_epochs` epochs
         running_loss = 0.0
         running_samples = 0
         for _ in range(local_epochs):
@@ -161,7 +161,7 @@ class Client:
 
         avg_loss = running_loss / max(running_samples, 1)
 
-        # 4. Return updated weights (CPU tensors -> reduces VRAM usage at server)
+        # Return updated weights (CPU tensors -> reduces VRAM usage at server)
         local_state_dict = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
         return local_state_dict, self.num_samples, avg_loss
 
@@ -195,9 +195,6 @@ class FedAvgServer:
 
         Performs WEIGHTED averaging: client k contributes proportionally to
         its dataset size (n_k / n_total).
-
-        This is the key difference from a naive uniform average and matters
-        when clients have very different dataset sizes (e.g. Dirichlet alpha=0.1).
         """
         # Compute total samples and per-client weights
         total_samples = sum(n for _, n in client_updates)
@@ -332,4 +329,4 @@ if __name__ == "__main__":
         print(f"[Round {r}] Test: loss={loss:.4f}, acc={acc*100:.2f}% | "
               f"avg client loss={stats['avg_client_loss']:.4f}")
 
-    print(f"\n✓ Sanity check completed. Loss should have decreased from initial.")
+    print(f"\n✓ Sanity check completed.")

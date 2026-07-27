@@ -2,30 +2,22 @@
 FedCurv: federated learning with EWC-like Fisher regularization
 (Shoham et al., 2019, "Overcoming Forgetting in Federated Learning on Non-IID Data").
 
-The intuition:
-- In non-IID FL, each client's local training drifts toward its own data
-  distribution. From the perspective of the *other* clients' data, this drift
-  is catastrophic forgetting of what the global model previously knew.
-- EWC (Kirkpatrick et al. 2017) mitigates forgetting in CL by adding a penalty
-  that discourages changing parameters that were important for previous tasks,
-  where importance is measured by the diagonal of the Fisher Information Matrix.
-- FedCurv applies the same idea in FL: during local training, each client
-  adds a penalty that discourages changing parameters that were important for
-  the *aggregated previous global model* (i.e., what all clients collectively
-  knew before this round).
-
 Local loss for client k at round t:
     L_k = L_local(theta) + (lambda/2) * sum_i F_global[i] * (theta[i] - theta_prev[i])^2
 
 Where:
     F_global = weighted average of the Fishers computed by each client in round t-1
-    theta_prev = global model parameters at the start of round t-1
+    theta_prev = snapshot of the global model at the START of the current round t,
+                   i.e. the weights every client receives before local training
     lambda = regularization coefficient (hyperparameter to sweep)
 
+The penalty keeps each client close to the global model it started from, weighted
+per-parameter by how important that parameter is according to the Fisher diagonal.
+At round 1 no Fisher exists yet, so the penalty is zero and FedCurv reduces exactly
+to FedAvg; the same holds for lambda = 0.
+
 This is a simplified variant of FedCurv that uses one shared Fisher instead of
-maintaining per-client Fishers, as in the original paper. It is conceptually
-equivalent and significantly simpler to implement, while preserving the spirit
-of the algorithm.
+maintaining per-client Fishers.
 """
 
 import sys
@@ -59,17 +51,8 @@ def compute_fisher_diagonal(
 ) -> Dict[str, torch.Tensor]:
     """
     Compute the diagonal of the empirical Fisher Information Matrix for a model.
-
-    F_i ≈ E_x[ (∂ log p(y|x; θ) / ∂θ_i)^2 ]
-
     Approximated by averaging the squared per-sample gradient with respect to
     each parameter, over `max_samples` data points.
-
-    Two variants in literature:
-    - "True Fisher": sample y ~ p(y|x; θ) from the model's prediction.
-    - "Empirical Fisher": use the ground-truth label y. Less rigorous but cheaper
-      and commonly used in EWC implementations.
-    We use empirical Fisher (use_true_labels=True) by default — same as EWC.
 
     Args:
         model: the model (typically the locally-trained model at end of round)
@@ -85,9 +68,7 @@ def compute_fisher_diagonal(
     fisher = _zero_fisher(model)
     count = 0
 
-    # Note: we compute per-sample gradients squared, NOT per-batch.
     # We process the data in small batches, but accumulate grad^2 sample-by-sample
-    # to get the "right" empirical Fisher estimate.
     for inputs, targets in dataloader:
         inputs = inputs.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
@@ -103,7 +84,7 @@ def compute_fisher_diagonal(
                 # Empirical Fisher: use ground-truth label
                 y = targets[i:i+1]
             else:
-                # True Fisher: sample from p(y|x; θ)
+                # Standard Fisher: sample from p(y|x; θ)
                 probs = F.softmax(logits, dim=1)
                 y = torch.multinomial(probs, num_samples=1).squeeze(1)
 
@@ -160,26 +141,27 @@ class FedCurvClient(Client):
             local_epochs: local training epochs
             fed_lambda: regularization coefficient
             fisher_global: aggregated Fisher from previous round (None at round 1)
-            theta_prev: snapshot of global weights at start of previous round (None at round 1)
+            theta_prev: snapshot of the global weights at the start of the CURRENT round
+                        (the anchor for the penalty; None at round 1)
             fisher_samples: number of samples used to estimate Fisher on this client
 
         Returns:
             (local_state_dict, num_samples, avg_train_loss, local_fisher)
         """
-        # 1. Build local model, load global weights
+        # Build local model, load global weights
         model = model_factory()
         model.load_state_dict(global_state_dict)
         model.train()
 
-        # 2. If we have Fisher + previous theta, move them to the same device as the model
-        #    and pre-extract per-parameter tensors for the penalty.
+        # If we have Fisher + previous theta, move them to the same device as the model
+        # and pre-extract per-parameter tensors for the penalty.
         use_penalty = (fisher_global is not None) and (theta_prev is not None) and (fed_lambda > 0)
 
         if use_penalty:
             fisher_dev = {n: f.to(self.device) for n, f in fisher_global.items()}
             theta_prev_dev = {n: t.to(self.device) for n, t in theta_prev.items()}
 
-        # 3. Local optimizer
+        # Local optimizer
         effective_lr = lr_override if lr_override is not None else self.lr
         optimizer = torch.optim.SGD(
             model.parameters(),
@@ -188,7 +170,7 @@ class FedCurvClient(Client):
             weight_decay=self.weight_decay,
         )
 
-        # 4. Training loop with penalty
+        # Training loop with penalty
         running_loss = 0.0
         running_samples = 0
         for _ in range(local_epochs):
@@ -201,8 +183,7 @@ class FedCurvClient(Client):
                 ce_loss = F.cross_entropy(logits, targets)
 
                 if use_penalty:
-                    # Compute the FedCurv penalty term:
-                    # (lambda/2) * sum over params i of F[i] * (theta[i] - theta_prev[i])^2
+                    # Compute the FedCurv penalty term
                     penalty = 0.0
                     for n, p in model.named_parameters():
                         if n in fisher_dev:
@@ -221,12 +202,12 @@ class FedCurvClient(Client):
 
         avg_loss = running_loss / max(running_samples, 1)
 
-        # 5. Compute the Fisher of the locally-trained model on the client's data
+        # Compute the Fisher of the locally-trained model on the client's data
         local_fisher = compute_fisher_diagonal(
             model, self.loader, self.device, max_samples=fisher_samples
         )
 
-        # 6. Return updated weights (on CPU) and Fisher (already CPU from compute_fisher_diagonal)
+        # Return updated weights (on CPU) and Fisher (already CPU from compute_fisher_diagonal)
         local_state_dict = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
         return local_state_dict, self.num_samples, avg_loss, local_fisher
 
@@ -234,8 +215,9 @@ class FedCurvClient(Client):
 class FedCurvServer(FedAvgServer):
     """
     FedCurv server: extends FedAvgServer with:
-    - state tracking for F_global (aggregated Fisher) and theta_prev (snapshot of weights
-      at the start of the previous round)
+    - state tracking for F_global (Fisher aggregated at the end of the previous round)
+    - a fresh snapshot of the global weights at the start of each round, used as the
+      anchor for that round's penalty
     - aggregation of Fishers (weighted average, same as for weights)
     - run_round modified to pass F_global and theta_prev to clients
     """
@@ -332,7 +314,6 @@ class FedCurvServer(FedAvgServer):
         weighted_loss = sum(l * c.num_samples for l, c in zip(client_losses, self.clients)) / total_samples
 
         # Compute the average magnitude of the penalty term in absolute terms
-        # (useful to diagnose if lambda is too small or too big)
         if self.theta_prev is not None and self.fisher_global is not None and round_idx > 1:
             penalty_norm = 0.0
             for n, fg in self.fisher_global.items():
@@ -380,7 +361,7 @@ if __name__ == "__main__":
     print(f"[OK] Fisher computed for {len(fisher)} parameter tensors")
     print(f"     fc.weight mean = {fisher['fc.weight'].mean():.2e}")
     print(f"     conv1.weight mean = {fisher['conv1.weight'].mean():.2e}")
-    assert all(f.min() >= 0 for f in fisher.values()), "Fisher must be non-negative"
+    assert all(f.min() >= 0 for f in fisher.values())
     print("[OK] Fisher is non-negative")
 
     # --- Test 2: FedCurv with lambda=0 should match FedAvg exactly ---
@@ -423,7 +404,6 @@ if __name__ == "__main__":
               f"penalty_norm={stats['penalty_norm']:.4f}")
 
     print("\n[OK] FedCurv with lambda=0 runs and converges similarly to FedAvg")
-    print("     If penalty_norm == 0.00 at all rounds, the penalty is correctly disabled.")
 
     # --- Test 3: FedCurv with lambda > 0 should run without crashing ---
     print("\n" + "=" * 60)
@@ -454,4 +434,3 @@ if __name__ == "__main__":
               f"penalty_norm={stats['penalty_norm']:.6f}")
 
     print("\n[OK] FedCurv with lambda=100 runs end-to-end")
-    print("     penalty_norm should be 0 at round 1 (no prev Fisher) and > 0 from round 2")

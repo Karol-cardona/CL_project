@@ -25,7 +25,7 @@ def iid_partition(
     Each client gets a roughly equal-sized random subset.
 
     Args:
-        dataset: torchvision dataset (must support len())
+        dataset: torchvision dataset
         num_clients: number of clients
         seed: random seed for reproducibility
 

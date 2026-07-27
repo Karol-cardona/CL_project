@@ -38,7 +38,7 @@ def _gn(num_channels: int, num_groups: int = 8) -> nn.GroupNorm:
 
 class BasicBlock(nn.Module):
     """
-    Basic ResNet block (no bottleneck): two 3x3 conv layers with skip connection.
+    Basic ResNet block: two 3x3 conv layers with skip connection.
     Used in CIFAR ResNets (ResNet-8, 20, 32, 56, 110).
     """
     expansion = 1
@@ -170,7 +170,7 @@ if __name__ == "__main__":
         n_params = count_parameters(model)
         print(f"\nResNet-{depth}: {n_params:,} parameters (~{n_params / 1e3:.1f} k)")
 
-    # Forward pass test on the recommended choice (ResNet-20)
+    # Forward pass test on ResNet-20
     print("\n" + "=" * 60)
     print("Forward pass test (ResNet-20)")
     print("=" * 60)

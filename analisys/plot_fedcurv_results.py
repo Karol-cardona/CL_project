@@ -1,15 +1,6 @@
 """
 Generate FedCurv plots for the presentation.
 
-Two figures:
-  1) fedcurv_lambda_ablation.png  -- E=2 lambda sweep (seed 42):
-       accuracy and fairness gap vs lambda, with the FedAvg (seed 42)
-       reference line. Shows: lambda=1 is best but ~FedAvg; large lambda
-       over-regularizes and collapses the model.
-  2) fedcurv_vs_fedavg_by_E.png   -- FedCurv(lambda=1) vs FedAvg at E=2 and E=5
-       (3 seeds, mean +/- std). Shows the E-dependent benefit: no gain at
-       E=2, a modest fairness-gap improvement at E=5.
-
 Numbers are taken directly from the run summaries (final round, best acc,
 extended metrics). They are hard-coded here so the figure is reproducible
 without depending on the exact results-folder names.
@@ -92,7 +83,7 @@ def plot_lambda_ablation():
     axes[1].set_xticks(x); axes[1].set_xticklabels(xticklabels)
     axes[1].set_xlabel(r"Regularization coefficient $\lambda$ (log grid)", fontsize=12)
     axes[1].set_ylabel("Fairness gap: max - min per-class acc (pp)", fontsize=12)
-    axes[1].set_title("Fairness gap vs $\\lambda$\n(no $\\lambda$ beats FedAvg at E=2)", fontsize=12)
+    axes[1].set_title("Fairness gap vs $\\lambda$", fontsize=12)
     axes[1].legend(fontsize=10, loc="upper left")
     axes[1].grid(True, alpha=0.3)
     axes[1].set_ylim(40, 85)

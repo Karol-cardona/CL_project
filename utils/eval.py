@@ -78,8 +78,7 @@ def evaluate_per_class(
         num_classes: int = 10,
 ) -> Dict[str, float]:
     """
-    Evaluate and break down accuracy per class. Kept for backward compatibility.
-    For the full metric suite, prefer `evaluate_extended`.
+    Evaluate and break down accuracy per class.
     """
     model.eval()
     total_loss = 0.0
@@ -227,7 +226,6 @@ if __name__ == "__main__":
 
     print("=" * 60)
     print("Sanity check: evaluate_extended on untrained ResNet-20")
-    print("Expected: accuracy ~10%, very high fairness_gap (random model)")
     print("=" * 60)
 
     set_seed(42)

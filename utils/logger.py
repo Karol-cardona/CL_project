@@ -7,16 +7,6 @@ ExperimentLogger does three things:
 3. Saves the run configuration (hyperparameters) to a YAML file.
 4. Optionally mirrors logs to Weights & Biases (wandb) for interactive plots.
 
-Usage:
-    logger = ExperimentLogger(
-        run_name="fedavg_alpha0.1_seed42",
-        config={"algorithm": "fedavg", "alpha": 0.1, "seed": 42, ...},
-        use_wandb=False,
-    )
-    for round in range(num_rounds):
-        # ... do training ...
-        logger.log({"round": round, "test_loss": ..., "test_acc": ...})
-    logger.close()
 """
 
 import sys

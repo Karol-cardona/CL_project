@@ -36,7 +36,6 @@ from utils.eval import evaluate, evaluate_extended
 from utils.logger import ExperimentLogger, make_run_name
 
 # Force UTF-8 stdout on Windows to handle Unicode characters in print statements
-# (cmd.exe defaults to cp1252 which crashes on '→', '↳', etc.)
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding='utf-8')
     sys.stderr.reconfigure(encoding='utf-8')
@@ -229,8 +228,7 @@ def main():
     init_loss, init_acc = evaluate(global_model, test_loader, device)
     print(f"[Round 0] Initial: loss={init_loss:.4f}, acc={init_acc*100:.2f}%")
 
-    # Build the initial log entry. For FedCurv runs, include penalty_norm=0 from round 0
-    # so the logger's column schema is consistent across all rounds.
+    # Build the initial log entry.
     init_log = {
         "round": 0,
         "train_loss": float("nan"),
@@ -337,7 +335,6 @@ def main():
             if k not in ("loss", "accuracy"):  # accuracy already in summary
                 summary[f"final_{k}"] = v
 
-        # Pretty print
         print("\n" + "=" * 60)
         print("Final evaluation (extended)")
         print("=" * 60)

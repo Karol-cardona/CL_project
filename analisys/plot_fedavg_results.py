@@ -4,18 +4,6 @@ Generate FedAvg baseline plots from completed experiments.
 Reads metrics.csv and summary.json from experiments/results/ and produces
 the plots used in the FedAvg part of the report.
 
-Changes vs. the first version:
-- 3 seeds are now aggregated for EVERY alpha (0.1, 1.0, 100), not just 0.1.
-  This gives real mean +/- std error bars across the whole alpha sweep.
-- New compute-matched E plot: accuracy and fairness gap vs *cumulative local
-  epochs* (round * E), using the constant-LR runs E1/R200, E2/R100, E5/R40.
-  This is the honest counterpart to the round-fixed E ablation.
-- New worst-class (min per-class accuracy) vs round plot: the most direct
-  "forgetting" signal to pair with the per-class bar chart.
-- Titles corrected: the acc - macro F1 gap is small on a balanced test set,
-  so it is demoted from "main diagnostic" to a complementary view; class
-  disparity is carried by the per-class / std / fairness-gap plots.
-
 All plots saved to plots/.
 """
 
@@ -488,7 +476,7 @@ def plot_acc_f1_gap_vs_round(runs_a01, runs_a1, runs_a100):
 
 
 # ============================================================
-# PLOT 9 (NEW) -- Compute-matched E: metrics vs CUMULATIVE local epochs
+# PLOT 9  -- Compute-matched E: metrics vs CUMULATIVE local epochs
 # ============================================================
 
 def plot_compute_matched_E(cm_E1, cm_E2, cm_E5):
@@ -542,7 +530,7 @@ def plot_compute_matched_E(cm_E1, cm_E2, cm_E5):
 
 
 # ============================================================
-# PLOT 10 (NEW) -- Worst-class accuracy (min per-class) vs round
+# PLOT 10 -- Worst-class accuracy (min per-class) vs round
 # ============================================================
 
 def plot_min_acc_vs_round(runs_a01, runs_a1, runs_a100):
@@ -578,17 +566,10 @@ def plot_min_acc_vs_round(runs_a01, runs_a1, runs_a100):
 
 
 # ============================================================
-# PLOT 11 (NEW) -- Fairness gap: round-fixed vs compute-matched (thesis figure)
+# PLOT 11 -- Fairness gap: round-fixed vs compute-matched
 # ============================================================
 
 def plot_gap_roundfixed_vs_compute(run_E1, run_E2, run_E5, cm_E1, cm_E2, cm_E5):
-    """
-    The thesis figure: the SAME E sweep under two budgeting regimes.
-    Left  (round-fixed, 100 rounds): more E = more total compute  -> gap DOWN.
-    Right (compute-matched, ~200 local epochs): equal compute      -> gap UP with E.
-    The fairness effect of E flips sign once compute is held fixed: that flip is
-    the whole point. Shared y-axis so the bar heights are directly comparable.
-    """
     fig, axes = plt.subplots(1, 2, figsize=(13, 5.5), sharey=True)
 
     E_labels = ["E=1", "E=2", "E=5"]
